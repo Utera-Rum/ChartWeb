@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>parity</title></head>
+<body style="font:14px monospace;background:#111;color:#ddd;padding:12px">
+<h3>JS版 と chartapp(Python)版の計算一致テスト</h3>
+<pre id="log">実行中…</pre>
+<script type="module">
+import { compute } from "../web/indicators.js";
+import { paramsFrom, evaluate, explain, verdict } from "../web/signals.js";
+
+const log = [];
+const fails = [];
+const REL = 1e-9;
+
+function same(a, b) {
+  if (a === null || b === null || Number.isNaN(a) || Number.isNaN(b)) return (a === null || Number.isNaN(a)) && (b === null || Number.isNaN(b));
+  return Math.abs(a - b) <= REL * Math.max(1, Math.abs(a), Math.abs(b));
+}
+function compareArr(name, got, exp) {
+  if (got.length !== exp.length) return fails.push(`${name}: 長さ ${got.length} != ${exp.length}`);
+  let bad = 0, first = -1;
+  for (let i = 0; i < exp.length; i++) if (!same(got[i], exp[i])) { bad++; if (first < 0) first = i; }
+  if (bad) fails.push(`${name}: ${bad}箇所ちがう（最初は ${first} 番目: JS=${got[first]} / Python=${exp[first]}）`);
+}
+
+const fx = await (await fetch("fixture.json")).json();
+for (const c of fx.cases) {
+  const before = fails.length;
+  const p = paramsFrom(c.params);
+  const d = compute(c.candles);
+  const ev = evaluate(d, p);
+  const e = c.expected;
+  for (const k of ["ma5", "ma20", "ma100", "ma200", "macd", "macdSig", "macdHist", "rsi", "bbUp", "bbLo", "spanA", "spanB"]) compareArr(`${c.name} ${k}`, d[k], e[k]);
+  for (const k of Object.keys(e.votes)) compareArr(`${c.name} 票:${k}`, ev.votes[k], e.votes[k]);
+  compareArr(`${c.name} score`, ev.score, e.score);
+  compareArr(`${c.name} signal`, ev.signal, e.signal);
+  compareArr(`${c.name} signalRaw`, ev.signalRaw, e.signalRaw);
+  const last = c.candles.length - 1;
+  const ex = explain(d, ev, last, p).map((r) => [r.label, r.vote, r.text]);
+  if (JSON.stringify(ex) !== JSON.stringify(e.explainLast)) fails.push(`${c.name} 理由の文: JS=${JSON.stringify(ex)} / Python=${JSON.stringify(e.explainLast)}`);
+  const vd = verdict(ev.score[last], p).label;
+  if (vd !== e.verdictLast) fails.push(`${c.name} 判定: JS=${vd} / Python=${e.verdictLast}`);
+  const nSig = ev.signal.filter(Boolean).length;
+  log.push(`${fails.length === before ? "PASS" : "FAIL"} ${c.name}（${c.candles.length}本, シグナル${nSig}回）`);
+}
+// ---- データ取得まわりの部品（通信なし）
+const { changedFrom, candleKeys, toCandle, merge } = await import("../web/datafeed.js");
+const bar = (t, c = 1) => ({ time: t, open: c, high: c, low: c, close: c, volume: 1 });
+const eq = (name, got, exp) => {
+  const ok = JSON.stringify(got) === JSON.stringify(exp);
+  if (!ok) fails.push(`${name}: got=${JSON.stringify(got)} expected=${JSON.stringify(exp)}`);
+  log.push(`${ok ? "PASS" : "FAIL"} ${name}`);
+};
+const base = [bar(1), bar(2), bar(3), bar(4)];
+eq("changedFrom 変化なし → 最新の足から", changedFrom(base, base.map((b) => ({ ...b }))), 3);
+eq("changedFrom 最新の足が動いた", changedFrom(base, [...base.slice(0, 3), bar(4, 2)]), 3);
+eq("changedFrom 足が1本増えた", changedFrom(base, [...base, bar(5)]), 3);
+eq("changedFrom 最新が動いて1本増えた", changedFrom(base, [...base.slice(0, 3), bar(4, 2), bar(5)]), 3);
+eq("changedFrom 途中の足が変わった → 全部", changedFrom(base, [base[0], bar(2, 9), base[2], base[3]]), 0);
+eq("changedFrom 本数が減った → 全部", changedFrom(base, base.slice(1)), 0);
+eq("changedFrom 古い方が1本消えて1本増えた → 全部", changedFrom(base, [...base.slice(1), bar(5)]), 0);
+eq("changedFrom 1本しかない → 全部", changedFrom([bar(1)], [bar(1, 2)]), 0);
+eq("changedFrom 空から → 全部", changedFrom([], base), 0);
+
+const DAY = 86400000;
+const t0 = Date.UTC(2026, 10, 9, 15, 30); // 2026-11-09 15:30 UTC
+eq("candleKeys 1h: 日ごと・新しい順", candleKeys("1h", t0 - 2 * DAY, t0), ["20261109", "20261108", "20261107"]);
+eq("candleKeys 1m: 同じ日だけ", candleKeys("1m", t0 - 600 * 60000, t0), ["20261109"]);
+eq("candleKeys 日をまたぐ", candleKeys("5m", Date.UTC(2026, 10, 9, 0, 10) - 3600000, Date.UTC(2026, 10, 9, 0, 10)), ["20261109", "20261108"]);
+eq("candleKeys 月末→月初", candleKeys("1h", Date.UTC(2026, 9, 31, 12), Date.UTC(2026, 10, 1, 12)), ["20261101", "20261031"]);
+eq("candleKeys 4h: 年ごと", candleKeys("4h", Date.UTC(2024, 5, 1), Date.UTC(2026, 5, 1)), ["2026", "2025", "2024"]);
+eq("candleKeys 1d: 同じ年", candleKeys("1d", Date.UTC(2026, 0, 2), Date.UTC(2026, 10, 1)), ["2026"]);
+eq("toCandle 文字列→数値・ミリ秒→秒", toCandle(["100.5", "110", "90", "105", "2.5", 1794232800123]), { time: 1794232800, open: 100.5, high: 110, low: 90, close: 105, volume: 2.5 });
+eq("merge 同じ時刻は新しい方・時刻順", merge([bar(1), bar(3, 1)], [bar(2), bar(3, 7)]).map((b) => [b.time, b.close]), [[1, 1], [2, 1], [3, 7]]);
+
+const result = { ok: fails.length === 0, fails, cases: log.length };
+document.getElementById("log").textContent = log.join("\n") + "\n" + (fails.length ? fails.join("\n") : "全部一致") ;
+window.__result = result;
+document.title = result.ok ? "PARITY OK" : "PARITY FAIL";
+</script>
+</body></html>
