@@ -1,7 +1,7 @@
 // 画面の部品だけをキャッシュする。価格データ(bitbank)は常に最新を取るのでキャッシュしない。
 // 通信できるときは常に最新のファイルを使い、オフラインのときだけキャッシュで開く。
-const CACHE = "chartweb-v1";
-const SHELL = ["./", "index.html", "style.css", "app.js", "indicators.js", "signals.js", "datafeed.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
+const CACHE = "chartweb-v2";
+const SHELL = ["./", "index.html", "style.css", "app.js", "indicators.js", "signals.js", "datafeed.js", "srlines.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 const LIB = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/";
 
 self.addEventListener("install", (e) => {

@@ -42,6 +42,39 @@ for (const c of fx.cases) {
   const nSig = ev.signal.filter(Boolean).length;
   log.push(`${fails.length === before ? "PASS" : "FAIL"} ${c.name}（${c.candles.length}本, シグナル${nSig}回）`);
 }
+// ---- サポート／抵抗ライン（chartapp の sr_lines.py と突き合わせ）
+const SR = await import("../web/srlines.js");
+const sfx = await (await fetch("sr_fixture.json")).json();
+for (const c of sfx.cases) {
+  const before = fails.length;
+  for (const side of ["support", "resistance"]) {
+    const got = SR.pick(c.high, c.low, c.close, side);
+    const exp = c.expected[side];
+    if (got.length !== exp.length) { fails.push(`${c.name} ${side}: 本数 JS=${got.length} / Python=${exp.length}（JS=${JSON.stringify(got.map((o) => o.price))} / Python=${JSON.stringify(exp.map((o) => o.price))}）`); continue; }
+    for (let i = 0; i < exp.length; i++) {
+      if (!same(got[i].price, exp[i].price) || got[i].important !== exp[i].important || !same(got[i].score, exp[i].score)) {
+        fails.push(`${c.name} ${side}[${i}]: JS=${JSON.stringify(got[i])} / Python=${JSON.stringify(exp[i])}`);
+      }
+    }
+  }
+  log.push(`${fails.length === before ? "PASS" : "FAIL"} 線 ${c.name}（サポート${c.expected.support.length}本・抵抗${c.expected.resistance.length}本）`);
+}
+{
+  const eqv = (name, got, exp) => {
+    const ok = JSON.stringify(got) === JSON.stringify(exp);
+    if (!ok) fails.push(`${name}: got=${JSON.stringify(got)} expected=${JSON.stringify(exp)}`);
+    log.push(`${ok ? "PASS" : "FAIL"} ${name}`);
+  };
+  // Python: round(9835123.0,-4)=9840000.0 / round(12250.0,-2)=12200.0 / round(12350.0,-2)=12400.0 / round(12.25,1)=12.2 / round(1.125,2)=1.12 / round(12.35,1)=12.3
+  eqv("nice 有効数字3桁", [SR.nice(9835123), SR.nice(142.841), SR.nice(0.69412), SR.nice(12219.4)], [9840000, 143, 0.694, 12200]);
+  eqv("nice ちょうど半分は偶数へ（Pythonのround）", [SR.nice(12250), SR.nice(12350), SR.nice(12.25), SR.nice(1.125), SR.nice(12.35)], [12200, 12400, 12.2, 1.12, 12.3]);
+  const lv = SR.levels(sfx.cases[0].high.map((h, i) => ({ high: h, low: sfx.cases[0].low[i], close: sfx.cases[0].close[i] })));
+  eqv("levels: 100〜120を行き来 → サポート99.5・抵抗120", [lv.support.map((o) => o.price), lv.resistance.map((o) => o.price)], [[99.5], [120]]);
+  eqv("levels: 足が60本未満は null", SR.levels(Array.from({ length: 59 }, (_, i) => ({ high: i + 2, low: i, close: i + 1 }))), null);
+  const specs = SR.lineSpecs(lv);
+  eqv("lineSpecs: 重要は赤/オレンジの太線・価格の高い順", specs.map((s) => [s.price, s.color, s.lineWidth]), [[120, SR.COLORS.resistanceImportant, 2], [99.5, SR.COLORS.supportImportant, 2]]);
+  eqv("lineSpecs: null は空", SR.lineSpecs(null), []);
+}
 // ---- データ取得まわりの部品（通信なし）
 const { changedFrom, candleKeys, toCandle, merge } = await import("../web/datafeed.js");
 const bar = (t, c = 1) => ({ time: t, open: c, high: c, low: c, close: c, volume: 1 });

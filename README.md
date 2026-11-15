@@ -8,6 +8,7 @@ Ultera Builder で作成（テンプレート: minimal）。
 
 ## できること
 - 銘柄（bitbank の円建て全銘柄）と時間足（1m〜1w）の切り替え。ローソク足・出来高・MA（5/20/100/200）・ボリンジャーバンド
+- **サポート／抵抗ライン（S/R）**: どの時間足でも、日足から自動で計算した線を引く。赤=重要なサポート／青=サポート／オレンジ=重要な抵抗／紫=抵抗（重要は太線）。chartapp の毎朝の自動更新と同じ計算。「S/R」ボタンで表示を切り替え。手で引いた線は反映されない
 - 売買判定（買い / 売り / 買い寄り / 売り寄り / 様子見）、スコア、ルールごとの理由、売買シグナルの印
 - 下のチャート: RSI / MACD / スコア。チャートをタップするとその足の判定内訳を表示
 - 判定ルール・基準値の設定（⚙）。設定はブラウザに保存
@@ -48,6 +49,10 @@ http://localhost:8766/tests/parity.html を開き、タイトルが `PARITY OK` 
 ```
 Z:\UlteraProjects\chartapp\.venv\Scripts\python.exe tests\make_fixture.py
 ```
+サポート／抵抗ラインの正解データ（`tests/sr_fixture.json`）は chartapp の `sr_lines.py` で作る（実際の日足を取るので通信する。通信できないときは `--offline`）。
+```
+Z:\UlteraProjects\chartapp\.venv\Scripts\python.exe tests\make_sr_fixture.py
+```
 
 ## 構成
 ```
@@ -57,6 +62,7 @@ ChartWeb/
 │   ├── app.js           # 画面・チャート(Lightweight Charts)・定期更新
 │   ├── indicators.js    # 指標の計算（chartapp の indicators.py と同じ結果）
 │   ├── signals.js       # 売買判定（chartapp の signals.py と同じ結果）
+│   ├── srlines.js       # サポート／抵抗ライン（chartapp の sr_lines.py と同じ結果）
 │   ├── datafeed.js      # bitbank 公開API
 │   └── sw.js  manifest.webmanifest  icon*.png  apple-touch-icon.png
 ├── tests/               # parity.html / make_fixture.py / fixture.json

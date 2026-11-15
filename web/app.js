@@ -2,6 +2,7 @@
 import { compute, MA_PERIODS } from "./indicators.js";
 import { RULES, defaultParams, paramsFrom, activeRules, evaluate, explain, verdict, lastSignal } from "./signals.js";
 import { TIMEFRAMES, TF_SEC, HISTORY_N, fetchHistory, fetchLatest, fetchTickers, merge, changedFrom, fmtPrice } from "./datafeed.js";
+import { levels as srLevels, lineSpecs, HISTORY_DAYS } from "./srlines.js";
 
 const JST = 9 * 3600; // チャートの時間軸はUTC表示なので、9時間足して日本時間に見せる
 const POLL_MS = 15000;
@@ -45,7 +46,9 @@ const S = {
   pair: typeof saved.pair === "string" ? saved.pair : "btc_jpy",
   tf: TF_SEC[saved.tf] ? saved.tf : "1h",
   sub: SUBS.some(([k]) => k === saved.sub) ? saved.sub : "rsi",
-  overlays: { ma5: false, ma20: true, ma100: false, ma200: true, bb: false, ...(saved.overlays || {}) }, // 細かい足でローソクが線に隠れないよう、初期はMA20とMA200だけ
+  overlays: { ma5: false, ma20: true, ma100: false, ma200: true, bb: false, sr: true, ...(saved.overlays || {}) }, // 細かい足でローソクが線に隠れないよう、初期はMA20とMA200だけ（sr=サポート/抵抗ライン）
+  sr: null, // 見ている銘柄のサポート/抵抗（日足から計算）
+  srLines: [], // チャートに引いてある線（createPriceLine の戻り）
   params: paramsFrom(saved.params),
   candles: [],
   d: null, // 指標
@@ -143,6 +146,49 @@ function applyMain(from = 0) {
   candleSeries.setMarkers(marks);
 }
 
+// ---------------------------------------------------------------- サポート／抵抗ライン
+// どの時間足を見ていても、日足（1500本）から計算した線を引く（chartapp の毎朝の自動更新と同じ計算。srlines.js）
+const srCache = new Map(); // 銘柄 -> {at, lv}
+const srInflight = new Map(); // 銘柄 -> 取得中の Promise
+const srFailedAt = new Map(); // 銘柄 -> 取得に失敗した時刻（5分は取り直さない）
+const SR_TTL_MS = 6 * 3600 * 1000;
+const SR_RETRY_MS = 5 * 60 * 1000;
+
+function drawLines() {
+  for (const l of S.srLines) candleSeries.removePriceLine(l);
+  S.srLines = [];
+  if (!S.overlays.sr || !S.sr) return;
+  for (const s of lineSpecs(S.sr)) {
+    S.srLines.push(candleSeries.createPriceLine({ price: s.price, color: s.color, lineWidth: s.lineWidth, lineStyle: 0, axisLabelVisible: true, title: "" }));
+  }
+}
+
+/** 見ている銘柄の線を用意して引く。計算済みなら通信しない。引けなくてもチャートは見られる */
+async function loadLines() {
+  const pair = S.pair;
+  if (!S.overlays.sr) return;
+  const hit = srCache.get(pair);
+  if (hit && Date.now() - hit.at < SR_TTL_MS) {
+    S.sr = hit.lv;
+    drawLines();
+    return;
+  }
+  if (Date.now() - (srFailedAt.get(pair) || 0) < SR_RETRY_MS) return;
+  try {
+    if (!srInflight.has(pair)) {
+      srInflight.set(pair, fetchHistory(pair, "1d", HISTORY_DAYS).then((daily) => srLevels(daily)).finally(() => srInflight.delete(pair)));
+    }
+    const lv = await srInflight.get(pair);
+    srCache.set(pair, { at: Date.now(), lv });
+    srFailedAt.delete(pair);
+    if (pair !== S.pair) return; // 取得中に銘柄を切り替えた
+    S.sr = lv;
+    drawLines();
+  } catch {
+    srFailedAt.set(pair, Date.now());
+  }
+}
+
 // 下のチャート（RSI / MACD / スコア）。切り替えるたびに作り直す
 function buildSub() {
   if (subSeries) for (const s of Object.values(subSeries)) sub.removeSeries(s);
@@ -220,6 +266,8 @@ function clearCharts() {
   S.sel = null;
   candleSeries.setData([]);
   candleSeries.setMarkers([]);
+  S.sr = null;
+  drawLines();
   volSeries.setData([]);
   for (const s of Object.values(lineSeries)) s.setData([]);
   for (const s of Object.values(subSeries)) s.setData([]);
@@ -311,6 +359,7 @@ async function load() {
     render(0);
     showRecent();
     setStatus(`更新 ${new Date().toLocaleTimeString("ja-JP")}（${candles.length}本）`);
+    loadLines(); // 待たない（日足の取得に数秒かかるので、チャートは先に見せる）
   } catch (e) {
     if (token !== S.token) return;
     setStatus(`読み込めませんでした: ${e.message}`, true);
@@ -334,6 +383,8 @@ async function poll() {
     S.candles = next;
     render(from);
     setStatus(`更新 ${new Date().toLocaleTimeString("ja-JP")}（${S.candles.length}本）`);
+    const hit = srCache.get(S.pair);
+    if (!hit || Date.now() - hit.at >= SR_TTL_MS) loadLines(); // 開きっぱなしでも、6時間ごとに線を計算し直す
   } catch (e) {
     if (token === S.token) setStatus(`更新できませんでした（次回再試行）: ${e.message}`, true);
   } finally {
@@ -375,7 +426,7 @@ function switchTf(tf) {
 
 function buildChips() {
   const chips = $("chips");
-  const items = [...MA_PERIODS.map((p) => [`ma${p}`, `MA${p}`, MA_COLORS[p]]), ["bb", "BB", "#7e57c2"]];
+  const items = [...MA_PERIODS.map((p) => [`ma${p}`, `MA${p}`, MA_COLORS[p]]), ["bb", "BB", "#7e57c2"], ["sr", "S/R", "#f23645"]];
   chips.replaceChildren(
     ...items.map(([k, label, color]) =>
       el("button", {
@@ -384,6 +435,11 @@ function buildChips() {
           S.overlays[k] = !S.overlays[k];
           e.currentTarget.setAttribute("aria-pressed", String(S.overlays[k]));
           saveStore();
+          if (k === "sr") {
+            if (S.overlays.sr) loadLines();
+            else drawLines();
+            return;
+          }
           if (S.candles.length) applyMain(0);
         },
       }),
@@ -491,4 +547,4 @@ function start() {
 }
 
 start();
-window.__chartweb = { S, poll, get main() { return main; }, get sub() { return sub; } }; // 動作確認(tests/)用
+window.__chartweb = { S, poll, loadLines, drawLines, srCache, get main() { return main; }, get sub() { return sub; } }; // 動作確認(tests/)用
